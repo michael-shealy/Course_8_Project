@@ -1,0 +1,162 @@
+---
+title: "Course_8_Project"
+author: "Michael Shealy"
+date: "6/8/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Course 8 Project
+
+### Michael Shealy
+
+First let's import the data
+
+```{r echo=TRUE}
+training <- read.csv("pml-training.csv")
+testing <- read.csv("pml-testing.csv")
+dim(training)
+```
+
+There is already a test set, and we will be using parallel cross validation to 
+train the model, so we do not need to split the data into training and testing. 
+We will load in the required libraries and set the seed next:
+
+```{r}
+library(caret)
+library(ggplot2)
+library(randomForest)
+set.seed(3433)
+```
+
+Now let's do some exploratory data analysis on the training data:
+
+```{r}
+table(sapply(training,class))
+```
+
+We have 37 character columns, 35 integer columns, and 88 numeric columns. Let's 
+first look at the proportion of missing values for each of the features:
+
+```{r}
+na_props <- data.frame(sapply(training,function(y) length(which(is.na(y)|y==""))/length(y)))
+colnames(na_props) <- c("prop")
+data.frame(na_props[order(-na_props$prop),])
+```
+
+100 of the 160 columns have exactly 97.93089% of missing values or blank characters 
+representing missing values. This suggests that there are certain rows in the 
+dataset with missing values in all these columns. We will drop these columns 
+as they would be difficult to accurately impute:
+
+```{r}
+training <- training[,-which(na_props$prop>0)]
+```
+
+The rowid, username,timestamp, and window columns are not relevant to the 
+predictions we want to make and we do not want them interfering with the prediction.
+We will drop these columns:
+
+```{r}
+training <- training[,-c(1:7)]
+```
+
+We now have only numeric data as the features of this dataset, with no missing 
+values. Let's see if any of the features have minimal variance:
+
+```{r}
+nsv <- nearZeroVar(training,saveMetrics = TRUE)
+nsv
+```
+
+None of the features seem to be monotonous in their information, which is a good 
+sign. Next, we are going to perform PCA on the training set to see if we can 
+maximize the retained variance into a few principal components. We will 
+standardize the data prior to performing the procedure. If the amount of 
+principal components required to retain a good amount of variance is still large, 
+we will not use the results in the modeling:
+
+```{r}
+classe <- training$classe
+training <- training[,-53]
+
+pca <- prcomp(training, scale=TRUE)
+eigs <- pca$sdev^2
+ex_var <- eigs / sum(eigs)
+plot(ex_var)
+
+total = 0
+i=1
+while (total < 0.9) {
+  total <- total + ex_var[i]
+  i <- i + 1
+}
+i
+```
+
+Using PCA, we were able to explain 90% of the variance in the data within 20 
+principal components. We will use these components for model training.
+
+We will use a random forest model to predict the classe of the data. This is a 
+computationally intensive model to train, so we will use the "parallel" package 
+to speed up the process:
+
+```{r}
+pca_training <- pca$x[,1:20]
+pca_training <- data.frame(pca_training)
+pca_training <- cbind(pca_training,classe)
+pca_training$classe <- as.factor(pca_training$classe)
+
+library(parallel)
+library(doParallel)
+cluster <- makeCluster(detectCores()-1)
+registerDoParallel(cluster)
+
+fitControl <- trainControl(method="cv", number=5, allowParallel = TRUE)
+
+```
+
+
+
+```{r}
+rf_model <- randomForest(classe~.,data=pca_training,trControl=fitControl)
+```
+
+```{r}
+stopCluster(cluster)
+registerDoSEQ()
+```
+
+The model fits within a reasonable amount of time thanks to the parallel cross 
+validation. Let's look at some summary statistics of the model:
+
+```{r}
+rf_model
+```
+
+The Random Forest function automatically calculates the OOB error rate, which 
+in this case is 1.72%. For predicting between 5 different classes, this is an 
+excellent error rate.
+
+Let's perform the required preprocessing steps on the test dataset and see what 
+the model predicts for these observations:
+
+```{r}
+na_props <- data.frame(sapply(testing,function(y) length(which(is.na(y)|y==""))/length(y)))
+colnames(na_props) <- c("prop")
+testing <- testing[,-which(na_props$prop>0)]
+testing <- testing[,-c(1:7)]
+problem_id <- testing$problem_id
+testing <- testing[,-53]
+pca_testing <- predict(pca,testing)[,1:20]
+```
+
+```{r}
+predict(rf_model,pca_testing)
+```
+
+Overall, the random forest approach to predicting the classe was successful 
+when combined with the appropriate preprocessing steps.
